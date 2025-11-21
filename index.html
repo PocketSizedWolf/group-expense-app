@@ -1,0 +1,593 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Korea Trip Expense Tracker</title>
+    <!-- Load Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Load React and Babel CDNs for in-browser JSX compilation -->
+    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <style>
+        /* Optional: Set a clean default font */
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+    </style>
+</head>
+<body>
+    <div id="root">
+        <!-- React App will render here -->
+    </div>
+
+    <script type="text/babel" data-type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, query, orderBy, onSnapshot, addDoc, serverTimestamp, doc, updateDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        const { useState, useEffect, useMemo } = React;
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+
+        // --- FIREBASE CONFIG & GLOBAL VARIABLES (Provided by Canvas Environment) ---
+        // Note: These variables are defined globally in the Canvas environment but need to be retrieved/mocked here
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        // --- GROUP DEFINITIONS AND SHARES ---
+        const GROUPS = {
+            RICE_KINGDOM: { name: "Rice Kingdom (2)", share: 0.4, emoji: "🍚👑" },
+            THREE_TWO_FIVE_GANG: { name: "325 Gang (3)", share: 0.6, emoji: "👪💪" },
+        };
+        const GROUP_OPTIONS = [GROUPS.RICE_KINGDOM, GROUPS.THREE_TWO_FIVE_GANG];
+
+        const ExpenseTracker = () => {
+            // Firebase State
+            const [db, setDb] = useState(null);
+            const [auth, setAuth] = useState(null);
+            const [userId, setUserId] = useState(null);
+            const [isAuthReady, setIsAuthReady] = useState(false);
+
+            // App State
+            const [expenses, setExpenses] = useState([]);
+            const [isLoading, setIsLoading] = useState(true);
+            const [error, setError] = useState(null);
+
+            // Form State (New Entry)
+            const [description, setDescription] = useState('');
+            const [amount, setAmount] = useState('');
+            const [paidByGroup, setPaidByGroup] = useState(GROUPS.RICE_KINGDOM.name);
+            const [category, setCategory] = useState('Meal');
+            const [isAdding, setIsAdding] = useState(false);
+
+            // Form State (Editing)
+            const [editingId, setEditingId] = useState(null);
+            const [editDescription, setEditDescription] = useState('');
+            const [editAmount, setEditAmount] = useState('');
+            const [editCategory, setEditCategory] = useState('');
+            const [editPaidByGroup, setEditPaidByGroup] = useState('');
+            const [isUpdating, setIsUpdating] = useState(false);
+
+            // Available Categories
+            const categories = ['Meal', 'Shopping', 'Drinks/Coffee', 'Transport', 'Activities', 'Accommodation', 'Other'];
+
+            // --- 1. FIREBASE INITIALIZATION AND AUTHENTICATION ---
+            useEffect(() => {
+                if (!firebaseConfig) {
+                    setError("Firebase configuration is missing.");
+                    setIsLoading(false);
+                    return;
+                }
+
+                try {
+                    const app = initializeApp(firebaseConfig);
+                    const authInstance = getAuth(app);
+                    const dbInstance = getFirestore(app);
+                    setDb(dbInstance);
+                    setAuth(authInstance);
+
+                    const unsubscribe = onAuthStateChanged(authInstance, async (user) => {
+                        if (user) {
+                            setUserId(user.uid);
+                            setIsAuthReady(true);
+                        } else {
+                            // Sign in anonymously if no custom token is available or initial check fails
+                            if (initialAuthToken) {
+                                await signInWithCustomToken(authInstance, initialAuthToken);
+                            } else {
+                                await signInAnonymously(authInstance);
+                            }
+                        }
+                    });
+                    return () => unsubscribe();
+                } catch (e) {
+                    console.error("Firebase Initialization Error:", e);
+                    setError("Failed to initialize Firebase services.");
+                    setIsLoading(false);
+                }
+            }, []);
+
+            // --- 2. FIRESTORE REAL-TIME DATA LISTENER ---
+            useEffect(() => {
+                if (!db || !isAuthReady) return;
+
+                const collectionPath = `/artifacts/${appId}/public/data/korea_trip_expenses`;
+                // Ordering by timestamp ensures the list looks correct after edits
+                const q = query(collection(db, collectionPath), orderBy("timestamp", "desc"));
+
+                const unsubscribe = onSnapshot(q, (snapshot) => {
+                    const fetchedExpenses = [];
+                    snapshot.forEach((doc) => {
+                        const data = doc.data();
+                        // Format timestamp to YYYY-MM-DD for display consistency
+                        const date = data.timestamp && data.timestamp.toDate ? data.timestamp.toDate().toISOString().split('T')[0] : (data.date || 'N/A');
+                        fetchedExpenses.push({ id: doc.id, ...data, date: date });
+                    });
+                    setExpenses(fetchedExpenses);
+                    setIsLoading(false);
+                }, (e) => {
+                    console.error("Firestore Snapshot Error:", e);
+                    setError("Failed to fetch real-time expenses.");
+                    setIsLoading(false);
+                });
+
+                return () => unsubscribe();
+            }, [db, isAuthReady]);
+
+            // --- 3. CORE BALANCE CALCULATION LOGIC (Memoized) ---
+            const balances = useMemo(() => {
+                const initialBalances = {
+                    [GROUPS.RICE_KINGDOM.name]: { paid: 0, owedShare: 0, netBalance: 0 },
+                    [GROUPS.THREE_TWO_FIVE_GANG.name]: { paid: 0, owedShare: 0, netBalance: 0 },
+                };
+                let totalTripSpend = 0;
+
+                for (const expense of expenses) {
+                    const amountKRW = expense.amount || 0;
+                    totalTripSpend += amountKRW;
+                    const paidBy = expense.paidByGroup;
+
+                    // Calculate each group's required share of *this* expense
+                    const requiredShareRK = amountKRW * GROUPS.RICE_KINGDOM.share;
+                    const requiredShare325 = amountKRW * GROUPS.THREE_TWO_FIVE_GANG.share;
+
+                    // Update Total Paid
+                    if (paidBy === GROUPS.RICE_KINGDOM.name) {
+                        initialBalances[GROUPS.RICE_KINGDOM.name].paid += amountKRW;
+                    } else if (paidBy === GROUPS.THREE_TWO_FIVE_GANG.name) {
+                        initialBalances[GROUPS.THREE_TWO_FIVE_GANG.name].paid += amountKRW;
+                    }
+
+                    // Update Total Owed Share (This is the amount each group is responsible for)
+                    initialBalances[GROUPS.RICE_KINGDOM.name].owedShare += requiredShareRK;
+                    initialBalances[GROUPS.THREE_TWO_FIVE_GANG.name].owedShare += requiredShare325;
+                }
+
+                // Calculate Net Balance: Paid - Owed Share
+                initialBalances[GROUPS.RICE_KINGDOM.name].netBalance =
+                    initialBalances[GROUPS.RICE_KINGDOM.name].paid - initialBalances[GROUPS.RICE_KINGDOM.name].owedShare;
+
+                initialBalances[GROUPS.THREE_TWO_FIVE_GANG.name].netBalance =
+                    initialBalances[GROUPS.THREE_TWO_FIVE_GANG.name].paid - initialBalances[GROUPS.THREE_TWO_FIVE_GANG.name].owedShare;
+
+                return {
+                    balances: initialBalances,
+                    totalTripSpend: totalTripSpend
+                };
+            }, [expenses]);
+
+            // --- KRW FORMATTING HELPER ---
+            const formatKRW = (amount) => {
+                if (typeof amount !== 'number') return '0 ₩';
+                return new Intl.NumberFormat('ko-KR', {
+                    style: 'currency',
+                    currency: 'KRW',
+                    minimumFractionDigits: 0
+                }).format(amount);
+            };
+
+            // --- 4. NEW EXPENSE FORM HANDLERS ---
+            const handleAmountChange = (e) => {
+                const value = e.target.value.replace(/[^0-9]/g, ''); // Only allow digits
+                setAmount(value);
+            };
+
+            const handleSubmit = async (e) => {
+                e.preventDefault();
+                if (!db || !amount || !description || isAdding) return;
+
+                const expenseAmount = parseInt(amount, 10);
+                if (isNaN(expenseAmount) || expenseAmount <= 0) {
+                    console.error("Please enter a valid expense amount in KRW.");
+                    return;
+                }
+
+                setIsAdding(true);
+                try {
+                    const newExpense = {
+                        description: description,
+                        amount: expenseAmount,
+                        paidByGroup: paidByGroup,
+                        category: category,
+                        timestamp: serverTimestamp(),
+                        userId: userId, // Record which user added the entry
+                        date: new Date().toISOString().split('T')[0], // Client-side date for fallback
+                    };
+
+                    const collectionPath = `/artifacts/${appId}/public/data/korea_trip_expenses`;
+                    await addDoc(collection(db, collectionPath), newExpense);
+
+                    // Clear form
+                    setDescription('');
+                    setAmount('');
+                    setCategory('Meal');
+
+                } catch (e) {
+                    console.error("Error adding document: ", e);
+                    setError("Failed to add expense. Please try again.");
+                } finally {
+                    setIsAdding(false);
+                }
+            };
+
+            // --- 5. EDITING HANDLERS ---
+            const startEdit = (expense) => {
+                setEditingId(expense.id);
+                setEditDescription(expense.description);
+                setEditAmount(expense.amount.toString());
+                setEditCategory(expense.category);
+                setEditPaidByGroup(expense.paidByGroup);
+            };
+
+            const cancelEdit = () => {
+                setEditingId(null);
+            };
+
+            const handleEditAmountChange = (e) => {
+                const value = e.target.value.replace(/[^0-9]/g, ''); // Only allow digits
+                setEditAmount(value);
+            };
+
+            const handleUpdateExpense = async (e) => {
+                e.preventDefault();
+                if (!db || !editingId || isUpdating) return;
+
+                const newAmount = parseInt(editAmount, 10);
+                if (isNaN(newAmount) || newAmount <= 0) {
+                    console.error("Invalid amount during edit.");
+                    setError("Please enter a valid expense amount in KRW for the update.");
+                    return;
+                }
+
+                setIsUpdating(true);
+                try {
+                    const collectionPath = `/artifacts/${appId}/public/data/korea_trip_expenses`;
+                    const expenseRef = doc(db, collection(db, collectionPath).path, editingId);
+
+                    await updateDoc(expenseRef, {
+                        description: editDescription,
+                        amount: newAmount,
+                        paidByGroup: editPaidByGroup,
+                        category: editCategory,
+                    });
+
+                    // Exit edit mode
+                    setEditingId(null);
+
+                } catch (e) {
+                    console.error("Error updating document: ", e);
+                    setError("Failed to update expense. Please try again.");
+                } finally {
+                    setIsUpdating(false);
+                }
+            };
+
+
+            // --- UI RENDER ---
+            if (!firebaseConfig) {
+                return <div className="p-4 text-center text-red-500">Error: Firebase configuration is missing.</div>;
+            }
+
+            return (
+                <div className="min-h-screen bg-gray-50 p-4 sm:p-6 font-sans">
+                    <header className="mb-6">
+                        <h1 className="text-3xl font-extrabold text-blue-700">🇰🇷 Korea Trip Expense Tracker</h1>
+                        <p className="text-sm text-gray-500 mt-1">
+                            Groups: <span className="font-semibold text-blue-500">Rice Kingdom (40%)</span> | <span className="font-semibold text-green-500">325 Gang (60%)</span>
+                        </p>
+                        <p className="text-xs text-gray-400 mt-2">
+                            User ID: {userId || 'Authenticating...'}
+                        </p>
+                    </header>
+
+                    {error && (
+                        <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded-xl mb-4 shadow-md" role="alert">
+                            <p className="font-bold">Error</p>
+                            <p className="text-sm">{error}</p>
+                        </div>
+                    )}
+
+                    {/* --- BALANCE CARD --- */}
+                    <div className="bg-white p-4 rounded-xl shadow-lg mb-6 border border-gray-200">
+                        <h2 className="text-xl font-bold mb-3 text-gray-800">💰 Current Balances</h2>
+                        <div className="grid grid-cols-2 gap-4">
+                            {Object.keys(balances.balances).map((groupName) => {
+                                const balance = balances.balances[groupName].netBalance;
+                                const isOwed = balance > 0;
+                                const isOwedClass = isOwed ? 'text-green-600 bg-green-50' : (balance < 0 ? 'text-red-600 bg-red-50' : 'text-gray-600 bg-gray-100');
+                                const sign = isOwed ? '+' : '';
+                                const groupInfo = GROUP_OPTIONS.find(g => g.name === groupName);
+
+                                return (
+                                    <div key={groupName} className={`p-3 rounded-lg border ${isOwed ? 'border-green-300' : 'border-red-300'}`}>
+                                        <p className="text-sm font-medium flex items-center mb-1">
+                                            <span className="mr-2">{groupInfo?.emoji}</span> {groupName}
+                                        </p>
+                                        <p className={`text-xl font-extrabold ${isOwedClass} px-2 py-1 rounded-md inline-block`}>
+                                            {sign}{formatKRW(Math.abs(balance))}
+                                        </p>
+                                        <p className="text-xs text-gray-500 mt-1">
+                                            {isOwed ? 'Amount Owed to Group' : (balance < 0 ? 'Amount Group Owes' : 'Balanced')}
+                                        </p>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                        <div className="mt-4 text-center border-t pt-3">
+                            <p className="text-sm text-gray-600 font-semibold">
+                                Total Trip Spend: {formatKRW(balances.totalTripSpend)}
+                            </p>
+                        </div>
+                    </div>
+
+                    {/* --- ADD EXPENSE FORM --- */}
+                    <div className="bg-white p-4 rounded-xl shadow-lg mb-6 border border-gray-200">
+                        <h2 className="text-xl font-bold mb-3 text-gray-800">➕ Add New Expense (KRW)</h2>
+                        <form onSubmit={handleSubmit} className="space-y-4">
+                            <div>
+                                <label htmlFor="description" className="block text-sm font-medium text-gray-700">Description</label>
+                                <input
+                                    id="description"
+                                    type="text"
+                                    value={description}
+                                    onChange={(e) => setDescription(e.target.value)}
+                                    placeholder="e.g., BBQ Dinner at Myeongdong"
+                                    required
+                                    className="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2 border focus:ring-blue-500 focus:border-blue-500"
+                                />
+                            </div>
+
+                            <div className="grid grid-cols-2 gap-4">
+                                <div>
+                                    <label htmlFor="amount" className="block text-sm font-medium text-gray-700">Amount (KRW)</label>
+                                    <input
+                                        id="amount"
+                                        type="tel"
+                                        value={amount}
+                                        onChange={handleAmountChange}
+                                        placeholder="e.g., 55000"
+                                        required
+                                        className="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2 border focus:ring-blue-500 focus:border-blue-500"
+                                    />
+                                </div>
+                                <div>
+                                    <label htmlFor="category" className="block text-sm font-medium text-gray-700">Category</label>
+                                    <select
+                                        id="category"
+                                        value={category}
+                                        onChange={(e) => setCategory(e.target.value)}
+                                        required
+                                        className="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2 border focus:ring-blue-500 focus:border-blue-500 bg-white"
+                                    >
+                                        {categories.map(c => (
+                                            <option key={c} value={c}>{c}</option>
+                                        ))}
+                                    </select>
+                                </div>
+                            </div>
+
+                            <div>
+                                <label htmlFor="paidByGroup" className="block text-sm font-medium text-gray-700">Paid By Group</label>
+                                <select
+                                    id="paidByGroup"
+                                    value={paidByGroup}
+                                    onChange={(e) => setPaidByGroup(e.target.value)}
+                                    required
+                                    className="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2 border focus:ring-blue-500 focus:border-blue-500 bg-white"
+                                >
+                                    {GROUP_OPTIONS.map(group => (
+                                        <option key={group.name} value={group.name}>{group.emoji} {group.name}</option>
+                                    ))}
+                                </select>
+                            </div>
+
+                            <button
+                                type="submit"
+                                disabled={isAdding || isLoading || !isAuthReady || editingId !== null}
+                                className={`w-full py-3 px-4 rounded-xl font-semibold shadow-md transition duration-150 ${
+                                    isAdding || !isAuthReady || editingId !== null
+                                        ? 'bg-gray-400 cursor-not-allowed'
+                                        : 'bg-blue-600 hover:bg-blue-700 text-white'
+                                }`}
+                            >
+                                {isAdding ? 'Adding...' : 'Record Expense'}
+                            </button>
+                        </form>
+                    </div>
+
+                    {/* --- EXPENSE LIST --- */}
+                    <h2 className="text-xl font-bold mb-3 text-gray-800">📋 Expense History</h2>
+                    <div className="space-y-3">
+                        {isLoading ? (
+                            <div className="text-center p-8 bg-white rounded-xl shadow-lg">
+                                <div className="animate-spin inline-block w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full"></div>
+                                <p className="mt-3 text-gray-600">Loading expenses...</p>
+                            </div>
+                        ) : (
+                            expenses.length === 0 ? (
+                                <p className="text-center text-gray-500 p-8 bg-white rounded-xl shadow-lg">No expenses recorded yet. Add your first meal!</p>
+                            ) : (
+                                expenses.map((expense) => {
+                                    const groupInfo = GROUP_OPTIONS.find(g => g.name === expense.paidByGroup);
+
+                                    if (expense.id === editingId) {
+                                        // --- EDIT FORM RENDER ---
+                                        return (
+                                            <div key={expense.id} className="bg-yellow-50 p-4 rounded-xl shadow border-l-4 border-yellow-500">
+                                                <h3 className="text-lg font-bold text-yellow-800 mb-3">Editing Expense</h3>
+                                                <form onSubmit={handleUpdateExpense} className="space-y-3">
+                                                    <input
+                                                        type="text"
+                                                        value={editDescription}
+                                                        onChange={(e) => setEditDescription(e.target.value)}
+                                                        placeholder="Description"
+                                                        required
+                                                        className="block w-full rounded-md border-gray-300 shadow-sm p-2 border focus:ring-yellow-500 focus:border-yellow-500"
+                                                    />
+                                                    <div className="grid grid-cols-2 gap-3">
+                                                        <input
+                                                            type="tel"
+                                                            value={editAmount}
+                                                            onChange={handleEditAmountChange}
+                                                            placeholder="Amount (KRW)"
+                                                            required
+                                                            className="rounded-md border-gray-300 shadow-sm p-2 border focus:ring-yellow-500 focus:border-yellow-500"
+                                                        />
+                                                        <select
+                                                            value={editCategory}
+                                                            onChange={(e) => setEditCategory(e.target.value)}
+                                                            required
+                                                            className="rounded-md border-gray-300 shadow-sm p-2 border focus:ring-yellow-500 focus:border-yellow-500 bg-white"
+                                                        >
+                                                            {categories.map(c => (
+                                                                <option key={c} value={c}>{c}</option>
+                                                            ))}
+                                                        </select>
+                                                    </div>
+                                                    <select
+                                                        value={editPaidByGroup}
+                                                        onChange={(e) => setEditPaidByGroup(e.target.value)}
+                                                        required
+                                                        className="block w-full rounded-md border-gray-300 shadow-sm p-2 border focus:ring-yellow-500 focus:border-yellow-500 bg-white"
+                                                    >
+                                                        {GROUP_OPTIONS.map(group => (
+                                                            <option key={group.name} value={group.name}>{group.emoji} {group.name}</option>
+                                                        ))}
+                                                    </select>
+                                                    <div className="flex space-x-2 pt-2">
+                                                        <button
+                                                            type="submit"
+                                                            disabled={isUpdating}
+                                                            className={`flex-1 py-2 px-4 rounded-lg font-semibold transition duration-150 ${isUpdating ? 'bg-yellow-300' : 'bg-yellow-600 hover:bg-yellow-700 text-white'}`}
+                                                        >
+                                                            {isUpdating ? 'Saving...' : 'Save Changes'}
+                                                        </button>
+                                                        <button
+                                                            type="button"
+                                                            onClick={cancelEdit}
+                                                            disabled={isUpdating}
+                                                            className="py-2 px-4 rounded-lg font-semibold text-gray-700 bg-gray-200 hover:bg-gray-300 transition duration-150"
+                                                        >
+                                                            Cancel
+                                                        </button>
+                                                    </div>
+                                                </form>
+                                            </div>
+                                        );
+                                    }
+
+                                    // --- STANDARD CARD RENDER ---
+                                    return (
+                                        <div key={expense.id} className="bg-white p-4 rounded-xl shadow border-l-4 border-blue-500">
+                                            <div className="flex justify-between items-start">
+                                                <div className="flex-1 min-w-0">
+                                                    <p className="text-base font-semibold text-gray-900 truncate">
+                                                        {expense.description}
+                                                    </p>
+                                                    <div className="text-sm text-gray-500 flex flex-wrap mt-1">
+                                                        <span className="mr-3 flex items-center">
+                                                            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 mr-1 text-gray-400" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-12a1 1 0 10-2 0v4a1 1 0 00.293.707l2.828 2.829a1 1 0 101.414-1.414L11 9.586V6z" clipRule="evenodd" /></svg>
+                                                            {expense.category}
+                                                        </span>
+                                                        <span className="flex items-center">
+                                                            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 mr-1 text-gray-400" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M6 2a1 1 0 00-1 1v1H4a2 2 0 00-2 2v10a2 2 0 002 2h12a2 2 0 002-2V6a2 2 0 00-2-2h-1V3a1 1 0 10-2 0v1H7V3a1 1 0 00-1-1zm0 5a1 1 0 000 2h8a1 1 0 100-2H6z" clipRule="evenodd" /></svg>
+                                                            {expense.date}
+                                                        </span>
+                                                    </div>
+                                                </div>
+                                                <div className="text-right ml-4 flex flex-col items-end">
+                                                    <p className="text-xl font-bold text-blue-600">{formatKRW(expense.amount)}</p>
+                                                    <p className="text-xs text-gray-700 mt-1 font-medium bg-blue-100 px-2 py-0.5 rounded-full">
+                                                        Paid by {groupInfo?.emoji} {groupInfo?.name.split(' ')[0]}
+                                                    </p>
+                                                    <button
+                                                        onClick={() => startEdit(expense)}
+                                                        disabled={editingId !== null}
+                                                        className={`mt-2 text-xs font-medium px-2 py-1 rounded transition duration-150 ${
+                                                            editingId !== null ? 'text-gray-400 bg-gray-100 cursor-not-allowed' : 'text-blue-500 hover:bg-blue-50'
+                                                        }`}
+                                                    >
+                                                        Edit
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    );
+                                })
+                            )
+                        )}
+                    </div>
+
+                    {/* --- SETTLEMENT SUGGESTION --- */}
+                    {balances.totalTripSpend > 0 && (
+                        <div className="mt-8 p-4 bg-yellow-50 border border-yellow-300 rounded-xl shadow-inner">
+                            <h3 className="font-bold text-lg text-yellow-800 flex items-center mb-2">
+                                <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 mr-2" viewBox="0 0 20 20" fill="currentColor"><path d="M8 10V7a1 1 0 012 0v3h4.372a1 1 0 01.761 1.761l-5.748 4.032a1 1 0 01-1.246 0l-5.748-4.032A1 1 0 015.628 10H10z" /></svg>
+                                Settlement Suggestion
+                            </h3>
+                            <p className="text-sm text-yellow-700 mb-3">
+                                Based on the 40:60 split (Rice Kingdom : 325 Gang), here is the final balance to settle up:
+                            </p>
+                            {(() => {
+                                const rkBalance = balances.balances[GROUPS.RICE_KINGDOM.name].netBalance;
+                                const three25Balance = balances.balances[GROUPS.THREE_TWO_FIVE_GANG.name].netBalance;
+
+                                if (rkBalance > 0) {
+                                    return (
+                                        <p className="font-bold text-green-700 bg-green-100 p-2 rounded-lg">
+                                            <span className="text-lg">{GROUPS.THREE_TWO_FIVE_GANG.emoji} 325 Gang owes {GROUPS.RICE_KINGDOM.emoji} Rice Kingdom</span>
+                                            : <span className="text-xl ml-2">{formatKRW(rkBalance)}</span>
+                                        </p>
+                                    );
+                                } else if (three25Balance > 0) {
+                                    return (
+                                        <p className="font-bold text-green-700 bg-green-100 p-2 rounded-lg">
+                                            <span className="text-lg">{GROUPS.RICE_KINGDOM.emoji} Rice Kingdom owes {GROUPS.THREE_TWO_FIVE_GANG.emoji} 325 Gang</span>
+                                            : <span className="text-xl ml-2">{formatKRW(three25Balance)}</span>
+                                        </p>
+                                    );
+                                } else {
+                                    return <p className="text-green-700">The expenses are perfectly balanced! Great job!</p>;
+                                }
+                            })()}
+                        </div>
+                    )}
+                    <footer className="mt-10 text-center text-xs text-gray-400">
+                        <p>Data synced in real-time via Firestore (Collection: korea_trip_expenses). Trip Dates: Dec 18 - Dec 25.</p>
+                    </footer>
+                </div>
+            );
+        };
+
+        // Initial render
+        root.render(
+            <React.StrictMode>
+                <ExpenseTracker />
+            </React.StrictMode>
+        );
+
+    </script>
+</body>
+</html>

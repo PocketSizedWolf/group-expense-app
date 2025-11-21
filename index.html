@@ -31,27 +31,37 @@
     <!-- 
         =====================================================================================
         STEP 1: FIREBASE CONFIGURATION (STANDARD JAVASCRIPT)
-        Define variables here to avoid "already declared" errors in the Babel script.
-        The variables 'appId', 'firebaseConfig', and 'initialAuthToken' are made 
-        available globally for the React component to use.
+        
+        The app prioritizes secure environment variables (__app_id, __firebase_config, 
+        __initial_auth_token) when running inside the Canvas environment.
+        
+        When running on a public host like Netlify, the MOCK variables act as placeholders.
+        To securely deploy this, you MUST set the MOCK_FIREBASE_CONFIG in Netlify 
+        Environment Variables. See deployment_guide.md for instructions.
         =====================================================================================
     -->
     <script>
-        const firebaseConfig = {
-  apiKey: "AIzaSyBo-nHPgrldJMbeZ-BRhiEg5iN95V-2xCs",
-  authDomain: "group-expense-app-eedc5.firebaseapp.com",
-  projectId: "group-expense-app-eedc5",
-  storageBucket: "group-expense-app-eedc5.firebasestorage.app",
-  messagingSenderId: "1005601345294",
-  appId: "1:1005601345294:web:b9daefffda7bc0ac09515f",
-  measurementId: "G-ZB73M80WWH"
-};
-        const MOCK_APP_ID = MOCK_FIREBASE_CONFIG.projectId; 
+        // MOCK CONFIGURATION (EMPTY - DO NOT HARDCODE YOUR REAL KEYS HERE)
+        // You MUST configure these values as Environment Variables in Netlify.
+        const MOCK_FIREBASE_CONFIG = {
+            apiKey: "", 
+            authDomain: "",
+            projectId: "",
+            storageBucket: "",
+            messagingSenderId: "",
+            appId: "" 
+        };
+        const MOCK_APP_ID = "local-dev-id"; // Simple ID for local testing
         const MOCK_AUTH_TOKEN = 'local-dev-token'; 
 
-        // Use 'var' to ensure global accessibility for the Babel script
+        // Choose between environment variables (Canvas) and MOCK values (Local/Netlify)
+        // If deploying to Netlify, you must set the FIREBASE_CONFIG_JSON variable 
+        // which will be captured as __firebase_config.
         var appId = typeof __app_id !== 'undefined' ? __app_id : MOCK_APP_ID;
-        var firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : MOCK_FIREBASE_CONFIG;
+        var firebaseConfig = typeof __firebase_config !== 'undefined' 
+            ? JSON.parse(__firebase_config) 
+            // Fallback for local testing or if Netlify variable is not set correctly
+            : MOCK_FIREBASE_CONFIG; 
         var initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : MOCK_AUTH_TOKEN;
     </script>
 
@@ -59,7 +69,6 @@
     <!-- 
         =====================================================================================
         STEP 2: REACT APPLICATION (Babel Script)
-        This script now assumes 'appId', 'firebaseConfig', etc., are defined globally.
         =====================================================================================
     -->
     <script type="text/babel">
@@ -122,13 +131,16 @@
             // Available Categories
             const categories = ['Meal', 'Shopping', 'Drinks/Coffee', 'Transport', 'Activities', 'Accommodation', 'Other'];
 
+            // --- Configuration Check ---
+            const isConfigPlaceholder = !firebaseConfig || !firebaseConfig.apiKey;
+
+
             // --- 1. FIREBASE INITIALIZATION AND AUTHENTICATION ---
             useEffect(() => {
-                // Check if the mock config is still present (only check apiKey as a guardrail)
-                if (!firebaseConfig || firebaseConfig.apiKey === "AIzaSy...your-unique-key...") {
-                    setError("Firebase configuration is using placeholder data. Please replace MOCK_FIREBASE_CONFIG in the code with your actual credentials to enable data storage.");
+                // Prevent Firebase initialization if configuration is missing
+                if (isConfigPlaceholder) {
+                    setError("Firebase configuration is missing or invalid. Please update your environment variables.");
                     setIsLoading(false);
-                    // Prevent Firebase initialization if using placeholder config
                     return;
                 }
 
@@ -144,10 +156,9 @@
                             setUserId(user.uid);
                             setIsAuthReady(true);
                         } else {
-                            // If user is not yet signed in, attempt anonymous sign-in (safer for external hosting)
+                            // If running outside Canvas, initialAuthToken is undefined/mocked, 
+                            // so we always sign in anonymously for simplicity.
                             try {
-                                // If running outside Canvas, initialAuthToken is undefined/mocked, 
-                                // so we always sign in anonymously for simplicity.
                                 await signInAnonymously(authInstance);
                             } catch (anonError) {
                                 console.error("Anonymous Sign-In Failed:", anonError);
@@ -167,7 +178,7 @@
             // --- 2. FIRESTORE REAL-TIME DATA LISTENER ---
             useEffect(() => {
                 // Check if we are using real DB and authenticated
-                if (!db || !isAuthReady || firebaseConfig.apiKey === "AIzaSy...your-unique-key...") return;
+                if (!db || !isAuthReady || isConfigPlaceholder) return;
 
                 const collectionPath = `/artifacts/${appId}/public/data/korea_trip_expenses`;
                 // Ordering by timestamp ensures the list looks correct after edits
@@ -253,8 +264,8 @@
             const handleSubmit = async (e) => {
                 e.preventDefault();
                 // Prevent adding if no real DB is configured
-                if (!db || !isAuthReady || firebaseConfig.apiKey === "AIzaSy...your-unique-key...") {
-                    setError("Data cannot be saved. Please update the Firebase configuration in the code.");
+                if (isConfigPlaceholder || !db || !isAuthReady || isAdding) {
+                    if (isConfigPlaceholder) setError("Data cannot be saved. Please set Firebase environment variables.");
                     return;
                 }
                 if (!amount || !description || isAdding) return;
@@ -314,8 +325,8 @@
             const handleUpdateExpense = async (e) => {
                 e.preventDefault();
                  // Prevent updating if no real DB is configured
-                if (!db || !isAuthReady || firebaseConfig.apiKey === "AIzaSy...your-unique-key...") {
-                    setError("Data cannot be updated. Please update the Firebase configuration in the code.");
+                if (isConfigPlaceholder || !db || !isAuthReady || isUpdating) {
+                    if (isConfigPlaceholder) setError("Data cannot be updated. Please set Firebase environment variables.");
                     return;
                 }
                 if (!editingId || isUpdating) return;
@@ -352,7 +363,7 @@
 
 
             // --- UI RENDER ---
-            if (firebaseConfig.apiKey === "AIzaSy...your-unique-key...") {
+            if (isConfigPlaceholder) {
                  // Special message for placeholder config
                  return (
                     <div className="min-h-screen bg-gray-50 p-4 sm:p-6 font-sans">
@@ -360,14 +371,12 @@
                             <h1 className="text-3xl font-extrabold text-blue-700">🇰🇷 Korea Trip Expense Tracker</h1>
                         </header>
                         <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-6 rounded-xl mb-4 shadow-md text-center" role="alert">
-                            <p className="font-bold text-lg mb-2">🛑 Configuration Placeholder Found 🛑</p>
+                            <p className="font-bold text-lg mb-2">🛑 Configuration Missing 🛑</p>
                             <p className="text-base mb-3">
-                                The app found a placeholder API key. Please ensure you have replaced the
-                                <code className="bg-red-200 p-1 rounded font-mono text-sm">MOCK_FIREBASE_CONFIG</code>
-                                in your <code className="bg-red-200 p-1 rounded font-mono text-sm">index.html</code> with your actual Firebase credentials.
+                                To run this publicly (e.g., on Netlify), you **must** set your Firebase credentials as Environment Variables.
                             </p>
                             <p className="text-sm font-semibold">
-                                Data entry is disabled until valid credentials are provided.
+                                Please check the updated <code className="bg-red-200 p-1 rounded font-mono text-sm">deployment_guide.md</code> for the required setup step.
                             </p>
                         </div>
                     </div>

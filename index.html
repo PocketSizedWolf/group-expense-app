@@ -6,12 +6,18 @@
     <title>Korea Trip Expense Tracker</title>
     <!-- Load Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
+    
     <!-- Load React and Babel CDNs for in-browser JSX compilation -->
     <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <!-- Load Firebase CDNs globally -->
+    <script src="https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js"></script>
+
     <style>
-        /* Optional: Set a clean default font */
         body {
             font-family: 'Inter', sans-serif;
         }
@@ -22,21 +28,15 @@
         <!-- React App will render here -->
     </div>
 
-    <script type="text/babel" data-type="module">
-        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, collection, query, orderBy, onSnapshot, addDoc, serverTimestamp, doc, updateDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
-
-        const { useState, useEffect, useMemo } = React;
-        const root = ReactDOM.createRoot(document.getElementById('root'));
-
-        // =====================================================================================
-        // !!! IMPORTANT: CONFIGURATION REQUIRED FOR EXTERNAL DEPLOYMENT !!!
-        // When running outside the canvas environment, you must provide the Firebase credentials.
-        // If you don't have them, the application will display a mock error state below.
-        // -------------------------------------------------------------------------------------
-
-        // Use a mock configuration for local running outside Canvas
+    <!-- 
+        =====================================================================================
+        STEP 1: FIREBASE CONFIGURATION (STANDARD JAVASCRIPT)
+        Define variables here to avoid "already declared" errors in the Babel script.
+        The variables 'appId', 'firebaseConfig', and 'initialAuthToken' are made 
+        available globally for the React component to use.
+        =====================================================================================
+    -->
+    <script>
         const firebaseConfig = {
   apiKey: "AIzaSyBo-nHPgrldJMbeZ-BRhiEg5iN95V-2xCs",
   authDomain: "group-expense-app-eedc5.firebaseapp.com",
@@ -46,23 +46,43 @@
   appId: "1:1005601345294:web:b9daefffda7bc0ac09515f",
   measurementId: "G-ZB73M80WWH"
 };
-        const MOCK_APP_ID = 'local-dev-app-id';
-        const MOCK_AUTH_TOKEN = 'local-dev-token'; // Custom token is rarely needed outside Canvas
+        const MOCK_APP_ID = MOCK_FIREBASE_CONFIG.projectId; 
+        const MOCK_AUTH_TOKEN = 'local-dev-token'; 
 
-        // If you want your app to connect to YOUR REAL Firebase project:
-        // 1. Go to your Firebase Console > Project Settings > General.
-        // 2. Copy the "Firebase SDK snippet" config object.
-        // 3. Replace MOCK_FIREBASE_CONFIG and MOCK_APP_ID below with your actual values.
+        // Use 'var' to ensure global accessibility for the Babel script
+        var appId = typeof __app_id !== 'undefined' ? __app_id : MOCK_APP_ID;
+        var firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : MOCK_FIREBASE_CONFIG;
+        var initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : MOCK_AUTH_TOKEN;
+    </script>
 
-        // --- FIREBASE CONFIG & GLOBAL VARIABLES (Adjusted for Local/External Use) ---
-        // We use the mock values to ensure the app doesn't crash on the initial load.
-        // To use your actual data, replace the MOCK values with your real Firebase config object.
-        const appId = typeof __app_id !== 'undefined' ? __app_id : MOCK_APP_ID;
-        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : MOCK_FIREBASE_CONFIG;
-        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : MOCK_AUTH_TOKEN;
 
-        // =====================================================================================
+    <!-- 
+        =====================================================================================
+        STEP 2: REACT APPLICATION (Babel Script)
+        This script now assumes 'appId', 'firebaseConfig', etc., are defined globally.
+        =====================================================================================
+    -->
+    <script type="text/babel">
+        // Accessing React/ReactDOM from the globally loaded CDNs
+        const { useState, useEffect, useMemo } = React;
+        const root = ReactDOM.createRoot(document.getElementById('root'));
 
+        // Accessing Firebase functions from the globally loaded CDNs (window.firebase)
+        const initializeApp = firebase.initializeApp;
+        const getAuth = firebase.auth.getAuth;
+        const signInAnonymously = firebase.auth.signInAnonymously;
+        const signInWithCustomToken = firebase.auth.signInWithCustomToken;
+        const onAuthStateChanged = firebase.auth.onAuthStateChanged;
+        
+        const getFirestore = firebase.firestore.getFirestore;
+        const collection = firebase.firestore.collection;
+        const query = firebase.firestore.query;
+        const orderBy = firebase.firestore.orderBy;
+        const onSnapshot = firebase.firestore.onSnapshot;
+        const addDoc = firebase.firestore.addDoc;
+        const serverTimestamp = firebase.firestore.serverTimestamp;
+        const doc = firebase.firestore.doc;
+        const updateDoc = firebase.firestore.updateDoc;
 
         // --- GROUP DEFINITIONS AND SHARES ---
         const GROUPS = {
@@ -73,6 +93,7 @@
 
         const ExpenseTracker = () => {
             // Firebase State
+            // Note: These now reference the global variables defined in the standard <script> tag.
             const [db, setDb] = useState(null);
             const [auth, setAuth] = useState(null);
             const [userId, setUserId] = useState(null);
@@ -103,10 +124,11 @@
 
             // --- 1. FIREBASE INITIALIZATION AND AUTHENTICATION ---
             useEffect(() => {
-                if (!firebaseConfig || firebaseConfig.apiKey === "MOCK_API_KEY_INSERT_YOUR_OWN_HERE") {
-                    setError("Firebase configuration is missing or using mock data. Please replace MOCK_FIREBASE_CONFIG in the code with your actual credentials to enable data storage.");
+                // Check if the mock config is still present (only check apiKey as a guardrail)
+                if (!firebaseConfig || firebaseConfig.apiKey === "AIzaSy...your-unique-key...") {
+                    setError("Firebase configuration is using placeholder data. Please replace MOCK_FIREBASE_CONFIG in the code with your actual credentials to enable data storage.");
                     setIsLoading(false);
-                    // Prevent Firebase initialization if using mock config
+                    // Prevent Firebase initialization if using placeholder config
                     return;
                 }
 
@@ -122,19 +144,22 @@
                             setUserId(user.uid);
                             setIsAuthReady(true);
                         } else {
-                            // Sign in anonymously if no custom token is available or initial check fails
-                            if (initialAuthToken && initialAuthToken !== MOCK_AUTH_TOKEN) {
-                                await signInWithCustomToken(authInstance, initialAuthToken);
-                            } else {
-                                // IMPORTANT: Use signInAnonymously for public/local deployment
+                            // If user is not yet signed in, attempt anonymous sign-in (safer for external hosting)
+                            try {
+                                // If running outside Canvas, initialAuthToken is undefined/mocked, 
+                                // so we always sign in anonymously for simplicity.
                                 await signInAnonymously(authInstance);
+                            } catch (anonError) {
+                                console.error("Anonymous Sign-In Failed:", anonError);
+                                setError("Failed to authenticate user for database access.");
+                                setIsLoading(false);
                             }
                         }
                     });
                     return () => unsubscribe();
                 } catch (e) {
                     console.error("Firebase Initialization Error:", e);
-                    setError("Failed to initialize Firebase services. Check your configuration keys and network.");
+                    setError("Failed to initialize Firebase services. Check your configuration keys and network. Error: " + e.message);
                     setIsLoading(false);
                 }
             }, []);
@@ -142,7 +167,7 @@
             // --- 2. FIRESTORE REAL-TIME DATA LISTENER ---
             useEffect(() => {
                 // Check if we are using real DB and authenticated
-                if (!db || !isAuthReady || firebaseConfig.apiKey === "MOCK_API_KEY_INSERT_YOUR_OWN_HERE") return;
+                if (!db || !isAuthReady || firebaseConfig.apiKey === "AIzaSy...your-unique-key...") return;
 
                 const collectionPath = `/artifacts/${appId}/public/data/korea_trip_expenses`;
                 // Ordering by timestamp ensures the list looks correct after edits
@@ -228,7 +253,7 @@
             const handleSubmit = async (e) => {
                 e.preventDefault();
                 // Prevent adding if no real DB is configured
-                if (!db || !isAuthReady || firebaseConfig.apiKey === "MOCK_API_KEY_INSERT_YOUR_OWN_HERE") {
+                if (!db || !isAuthReady || firebaseConfig.apiKey === "AIzaSy...your-unique-key...") {
                     setError("Data cannot be saved. Please update the Firebase configuration in the code.");
                     return;
                 }
@@ -289,7 +314,7 @@
             const handleUpdateExpense = async (e) => {
                 e.preventDefault();
                  // Prevent updating if no real DB is configured
-                if (!db || !isAuthReady || firebaseConfig.apiKey === "MOCK_API_KEY_INSERT_YOUR_OWN_HERE") {
+                if (!db || !isAuthReady || firebaseConfig.apiKey === "AIzaSy...your-unique-key...") {
                     setError("Data cannot be updated. Please update the Firebase configuration in the code.");
                     return;
                 }
@@ -327,20 +352,19 @@
 
 
             // --- UI RENDER ---
-            if (firebaseConfig.apiKey === "MOCK_API_KEY_INSERT_YOUR_OWN_HERE") {
-                 // Special message for mock mode
+            if (firebaseConfig.apiKey === "AIzaSy...your-unique-key...") {
+                 // Special message for placeholder config
                  return (
                     <div className="min-h-screen bg-gray-50 p-4 sm:p-6 font-sans">
                         <header className="mb-6">
                             <h1 className="text-3xl font-extrabold text-blue-700">🇰🇷 Korea Trip Expense Tracker</h1>
                         </header>
                         <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-6 rounded-xl mb-4 shadow-md text-center" role="alert">
-                            <p className="font-bold text-lg mb-2">🛑 Configuration Required 🛑</p>
+                            <p className="font-bold text-lg mb-2">🛑 Configuration Placeholder Found 🛑</p>
                             <p className="text-base mb-3">
-                                You are seeing this because the application cannot connect to the database.
-                                To enable data storage and real-time sync, you must replace the
+                                The app found a placeholder API key. Please ensure you have replaced the
                                 <code className="bg-red-200 p-1 rounded font-mono text-sm">MOCK_FIREBASE_CONFIG</code>
-                                in your <code className="bg-red-200 p-1 rounded font-mono text-sm">index.html</code> file with your actual Google Firebase credentials.
+                                in your <code className="bg-red-200 p-1 rounded font-mono text-sm">index.html</code> with your actual Firebase credentials.
                             </p>
                             <p className="text-sm font-semibold">
                                 Data entry is disabled until valid credentials are provided.
@@ -364,7 +388,7 @@
 
                     {error && (
                         <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded-xl mb-4 shadow-md" role="alert">
-                            <p className="font-bold">Error</p>
+                            <p className="font-bold">Database Error</p>
                             <p className="text-sm">{error}</p>
                         </div>
                     )}
@@ -574,7 +598,7 @@
                                                         <span className="flex items-center">
                                                             <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 mr-1 text-gray-400" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M6 2a1 1 0 00-1 1v1H4a2 2 0 00-2 2v10a2 2 0 002 2h12a2 2 0 002-2V6a2 2 0 00-2-2h-1V3a1 1 0 10-2 0v1H7V3a1 1 0 00-1-1zm0 5a1 1 0 000 2h8a1 1 0 100-2H6z" clipRule="evenodd" /></svg>
                                                             {expense.date}
-                                                        </span>
+                                                        </span >
                                                     </div>
                                                 </div>
                                                 <div className="text-right ml-4 flex flex-col items-end">
